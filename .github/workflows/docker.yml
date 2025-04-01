@@ -1,0 +1,174 @@
+name: Sync Home Assistant from GHCR
+
+on:
+  push:
+    paths:
+      - 'versions.txt'
+      - 'stable_version.txt'
+
+env:
+  ALIYUN_REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  ALIYUN_NAMESPACE: your-namespace
+  VERSIONS_FILE: 'versions.txt'
+  STABLE_VERSION_FILE: 'stable_version.txt'
+
+jobs:
+  version_loader:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.load_versions.outputs.versions }}
+      stable_version: ${{ steps.load_stable.outputs.stable_version }}
+      files_changed: ${{ steps.detect_changes.outputs.files_changed }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 2  # 需要比较前一次提交
+
+      - name: Load version list
+        id: load_versions
+        run: |
+          versions=$(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          echo "versions=${versions}" >> $GITHUB_OUTPUT
+
+      - name: Load stable version
+        id: load_stable
+        run: |
+          stable_version=$(cat $STABLE_VERSION_FILE | tr -d '\n')
+          echo "stable_version=${stable_version}" >> $GITHUB_OUTPUT
+
+      - name: Detect file changes
+        id: detect_changes
+        run: |
+          changed_files=$(git diff --name-only HEAD^ HEAD)
+          echo "Changed files: ${changed_files}"
+          
+          # 检查具体哪些文件被修改
+          versions_changed=$(echo "$changed_files" | grep -q "$VERSIONS_FILE" && echo "true" || echo "false")
+          stable_changed=$(echo "$changed_files" | grep -q "$STABLE_VERSION_FILE" && echo "true" || echo "false")
+          
+          echo "versions_changed=${versions_changed}" >> $GITHUB_OUTPUT
+          echo "stable_changed=${stable_changed}" >> $GITHUB_OUTPUT
+          echo "files_changed=${versions_changed}_${stable_changed}" >> $GITHUB_OUTPUT
+
+  image_sync:
+    needs: version_loader
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: ${{ fromJSON(needs.version_loader.outputs.versions) }}
+        arch: [
+          'home-assistant',
+          'amd64-homeassistant',
+          'i386-homeassistant',
+          'armhf-homeassistant',
+          'armv7-homeassistant',
+          'aarch64-homeassistant',
+          'generic-x86-64-homeassistant',
+          'intel-nuc-homeassistant',
+          'khadas-vim3-homeassistant',
+          'odroid-c2-homeassistant',
+          'odroid-c4-homeassistant',
+          'odroid-m1-homeassistant',
+          'odroid-n2-homeassistant',
+          'odroid-xu-homeassistant',
+          'qemuarm-homeassistant',
+          'qemuarm-64-homeassistant',
+          'qemux86-homeassistant',
+          'qemux86-64-homeassistant',
+          'raspberrypi-homeassistant',
+          'raspberrypi2-homeassistant',
+          'raspberrypi3-homeassistant',
+          'raspberrypi3-64-homeassistant',
+          'raspberrypi4-homeassistant',
+          'raspberrypi4-64-homeassistant',
+          'raspberrypi5-64-homeassistant',
+          'tinker-homeassistant',
+          'yellow-homeassistant',
+          'green-homeassistant'
+        ]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login to Aliyun
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: Pull from GHCR
+        run: |
+          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
+          
+          # 使用GitHub Token拉取GHCR镜像
+          # echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          
+          docker pull ${SRC_IMAGE}:${{ matrix.version }} || {
+            echo "::warning::Skipping ${{ matrix.arch }}:${{ matrix.version }} (not available)"
+            exit 0
+          }
+          
+          # 基础标签
+          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
+          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:latest
+          
+          # 仅对主镜像添加特殊标签
+          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
+            # 添加stable标签（如果版本匹配且stable_version.txt有变化）
+            if [ "${{ matrix.version }}" == "${{ needs.version_loader.outputs.stable_version }}" ] && 
+               [ "${{ fromJSON(needs.version_loader.outputs.files_changed.split('_')[1]) }}" == "true" ]; then
+              docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:stable
+              echo "Added stable tag for ${{ matrix.version }}"
+            fi
+            
+            # 添加年月标签（如果versions.txt有变化）
+            if [ "${{ fromJSON(needs.version_loader.outputs.files_changed.split('_')[0]) }}" == "true" ]; then
+              ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+              docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${ym_tag}
+              echo "Added YYYY.MM tag: ${ym_tag}"
+            fi
+          fi
+
+      - name: Push to Aliyun
+        run: |
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
+          
+          # 总是推送基础标签
+          docker push ${DEST_IMAGE}:${{ matrix.version }}
+          docker push ${DEST_IMAGE}:latest
+          
+          # 条件推送特殊标签
+          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
+            # 推送stable标签
+            if [ "${{ matrix.version }}" == "${{ needs.version_loader.outputs.stable_version }}" ] && 
+               [ "${{ fromJSON(needs.version_loader.outputs.files_changed.split('_')[1]) }}" == "true" ]; then
+              docker push ${DEST_IMAGE}:stable
+            fi
+            
+            # 推送年月标签
+            if [ "${{ fromJSON(needs.version_loader.outputs.files_changed.split('_')[0]) }}" == "true" ]; then
+              ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+              docker push ${DEST_IMAGE}:${ym_tag}
+            fi
+          fi
+
+      - name: Cleanup
+        run: |
+          docker rmi ghcr.io/home-assistant/${{ matrix.arch }}:${{ matrix.version }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ matrix.version }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest || true
+          
+          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
+            if [ "${{ fromJSON(needs.version_loader.outputs.files_changed.split('_')[0]) }}" == "true" ]; then
+              ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+              docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag} || true
+            fi
+            if [ "${{ fromJSON(needs.version_loader.outputs.files_changed.split('_')[1]) }}" == "true" ] && 
+               [ "${{ matrix.version }}" == "${{ needs.version_loader.outputs.stable_version }}" ]; then
+              docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable || true
+            fi
+          fi
+          
+          # 登出GHCR
+          # docker logout ghcr.io
