@@ -4,56 +4,25 @@ on:
   push:
     paths:
       - 'versions.txt'
-      - 'stable_version.txt'
 
 env:
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   VERSIONS_FILE: 'versions.txt'
-  STABLE_VERSION_FILE: 'stable_version.txt'
 
 jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
       versions: ${{ steps.load_versions.outputs.versions }}
-      stable_version: ${{ steps.load_stable.outputs.stable_version }}
-      versions_changed: ${{ steps.detect_changes.outputs.versions_changed }}
-      stable_changed: ${{ steps.detect_changes.outputs.stable_changed }}
     steps:
       - uses: actions/checkout@v3
-        with:
-          fetch-depth: 2
 
       - name: Load version list
         id: load_versions
         run: |
           versions=$(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(. != ""))')
           echo "versions=${versions}" >> $GITHUB_OUTPUT
-
-      - name: Load stable version
-        id: load_stable
-        run: |
-          stable_version=$(cat $STABLE_VERSION_FILE | tr -d '\n')
-          echo "stable_version=${stable_version}" >> $GITHUB_OUTPUT
-
-      - name: Detect file changes
-        id: detect_changes
-        run: |
-          changed_files=$(git diff --name-only HEAD^ HEAD)
-          echo "Changed files: ${changed_files}"
-          
-          if echo "$changed_files" | grep -q "$VERSIONS_FILE"; then
-            echo "versions_changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "versions_changed=false" >> $GITHUB_OUTPUT
-          fi
-          
-          if echo "$changed_files" | grep -q "$STABLE_VERSION_FILE"; then
-            echo "stable_changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "stable_changed=false" >> $GITHUB_OUTPUT
-          fi
 
   image_sync:
     needs: version_loader
@@ -107,55 +76,42 @@ jobs:
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
           
           # 使用GitHub Token拉取GHCR镜像
-          # echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           
           docker pull ${SRC_IMAGE}:${{ matrix.version }} || {
             echo "::warning::Skipping ${{ matrix.arch }}:${{ matrix.version }} (not available)"
             exit 0
           }
           
-          # 基础标签
+          # 基础标签（所有架构）
           docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
           docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:latest
           
           # 仅对主镜像添加特殊标签
           if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            # 添加stable标签（如果版本匹配且stable_version.txt有变化）
-            if [ "${{ matrix.version }}" == "${{ needs.version_loader.outputs.stable_version }}" ] && 
-               [ "${{ needs.version_loader.outputs.stable_changed }}" == "true" ]; then
-              docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:stable
-              echo "Added stable tag for ${{ matrix.version }}"
-            fi
+            # 始终添加stable标签（指向当前版本）
+            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:stable
             
-            # 添加年月标签（如果versions.txt有变化）
-            if [ "${{ needs.version_loader.outputs.versions_changed }}" == "true" ]; then
-              ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-              docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${ym_tag}
-              echo "Added YYYY.MM tag: ${ym_tag}"
-            fi
+            # 添加年月标签（从版本号提取）
+            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${ym_tag}
+            echo "Added stable and YYYY.MM tags for home-assistant:${{ matrix.version }}"
           fi
 
       - name: Push to Aliyun
         run: |
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
           
-          # 总是推送基础标签
+          # 推送基础标签
           docker push ${DEST_IMAGE}:${{ matrix.version }}
           docker push ${DEST_IMAGE}:latest
           
-          # 条件推送特殊标签
+          # 推送主镜像的特殊标签
           if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            # 推送stable标签
-            if [ "${{ matrix.version }}" == "${{ needs.version_loader.outputs.stable_version }}" ] && 
-               [ "${{ needs.version_loader.outputs.stable_changed }}" == "true" ]; then
-              docker push ${DEST_IMAGE}:stable
-            fi
+            docker push ${DEST_IMAGE}:stable
             
-            # 推送年月标签
-            if [ "${{ needs.version_loader.outputs.versions_changed }}" == "true" ]; then
-              ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-              docker push ${DEST_IMAGE}:${ym_tag}
-            fi
+            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+            docker push ${DEST_IMAGE}:${ym_tag}
           fi
 
       - name: Cleanup
@@ -165,15 +121,7 @@ jobs:
           docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest || true
           
           if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            if [ "${{ needs.version_loader.outputs.versions_changed }}" == "true" ]; then
-              ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-              docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag} || true
-            fi
-            if [ "${{ needs.version_loader.outputs.stable_changed }}" == "true" ] && 
-               [ "${{ matrix.version }}" == "${{ needs.version_loader.outputs.stable_version }}" ]; then
-              docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable || true
-            fi
+            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+            docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag} || true
+            docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable || true
           fi
-          
-          # 登出GHCR
-          # docker logout ghcr.io
