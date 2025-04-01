@@ -7,8 +7,8 @@ on:
       - 'stable_version.txt'
 
 env:
-  ALIYUN_REGISTRY: registry.cn-hangzhou.aliyuncs.com
-  ALIYUN_NAMESPACE: your-namespace
+  ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
+  ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   VERSIONS_FILE: 'versions.txt'
   STABLE_VERSION_FILE: 'stable_version.txt'
 
