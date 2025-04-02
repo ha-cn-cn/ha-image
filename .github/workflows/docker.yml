@@ -76,7 +76,7 @@ jobs:
           docker push ${DEST_IMAGE}:${{ matrix.component.versions }}
           docker push ${DEST_IMAGE}:latest
 
-      - name: Cleanup ${{ matrix.component.type }} images
+      - name: Cleanup images
         run: |
           docker rmi ghcr.io/home-assistant/${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
           docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
@@ -94,29 +94,7 @@ jobs:
           'i386-homeassistant',
           'armhf-homeassistant',
           'armv7-homeassistant',
-          'aarch64-homeassistant',
-          'generic-x86-64-homeassistant',
-          'intel-nuc-homeassistant',
-          'khadas-vim3-homeassistant',
-          'odroid-c2-homeassistant',
-          'odroid-c4-homeassistant',
-          'odroid-m1-homeassistant',
-          'odroid-n2-homeassistant',
-          'odroid-xu-homeassistant',
-          'qemuarm-homeassistant',
-          'qemuarm-64-homeassistant',
-          'qemux86-homeassistant',
-          'qemux86-64-homeassistant',
-          'raspberrypi-homeassistant',
-          'raspberrypi2-homeassistant',
-          'raspberrypi3-homeassistant',
-          'raspberrypi3-64-homeassistant',
-          'raspberrypi4-homeassistant',
-          'raspberrypi4-64-homeassistant',
-          'raspberrypi5-64-homeassistant',
-          'tinker-homeassistant',
-          'yellow-homeassistant',
-          'green-homeassistant'
+          'aarch64-homeassistant'
         ]
     steps:
       - uses: actions/checkout@v3
@@ -128,7 +106,7 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: Pull Home Assistant Core
+      - name: Pull Core Image
         run: |
           SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
