@@ -40,13 +40,12 @@ jobs:
     needs: version_loader
     strategy:
       matrix:
-        component: [
-          { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }},
-          { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }},
-          { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }},
-          { type: 'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }},
-          { type: 'observer', name: 'hassio-observer', versions: ${{ fromJSON(needs.version_loader.outputs.observer_versions) }}
-        ]
+        component:
+          - { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }}}
+          - { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }}}
+          - { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }}}
+          - { type: 'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }}}
+          - { type: 'observer', name: 'hassio-observer', versions: ${{ fromJSON(needs.version_loader.outputs.observer_versions) }}}
         arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
     steps:
       - uses: actions/checkout@v3
@@ -60,11 +59,11 @@ jobs:
 
       - name: Pull ${{ matrix.component.type }} image
         run: |
-          SRC_IMAGE="ghcr.io/home-assistant/${arch}-${{ matrix.component.name }}"
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}"
+          SRC_IMAGE="ghcr.io/home-assistant/${matrix.arch}-${{ matrix.component.name }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}"
           
           docker pull ${SRC_IMAGE}:${{ matrix.component.versions }} || {
-            echo "::warning::Skipping ${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} (not exists)"
+            echo "::warning::Skipping ${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} (not exists)"
             exit 0
           }
           
@@ -73,15 +72,15 @@ jobs:
 
       - name: Push ${{ matrix.component.type }} image
         run: |
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}"
           docker push ${DEST_IMAGE}:${{ matrix.component.versions }}
           docker push ${DEST_IMAGE}:latest
 
       - name: Cleanup ${{ matrix.component.type }} images
         run: |
-          docker rmi ghcr.io/home-assistant/${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}:latest || true
+          docker rmi ghcr.io/home-assistant/${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}:latest || true
 
   sync_core:
     needs: version_loader
