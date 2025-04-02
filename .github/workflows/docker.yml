@@ -40,7 +40,7 @@ jobs:
     needs: version_loader
     strategy:
       matrix:
-        component:
+        component: 
           - { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }}}
           - { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }}}
           - { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }}}
@@ -49,7 +49,7 @@ jobs:
         arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
     steps:
       - uses: actions/checkout@v3
-
+      
       - name: Login to Aliyun
         uses: docker/login-action@v2
         with:
@@ -120,7 +120,7 @@ jobs:
         ]
     steps:
       - uses: actions/checkout@v3
-
+      
       - name: Login to Aliyun
         uses: docker/login-action@v2
         with:
