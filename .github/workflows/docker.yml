@@ -1,4 +1,4 @@
-name: Sync Home Assistant from GHCR
+name: Sync Home Assistant Ecosystem
 
 on:
   push:
@@ -14,22 +14,81 @@ jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
-      versions: ${{ steps.load_versions.outputs.versions }}
+      core_versions: ${{ steps.load_versions.outputs.core_versions }}
+      cli_versions: ${{ steps.load_versions.outputs.cli_versions }}
+      audio_versions: ${{ steps.load_versions.outputs.audio_versions }}
+      dns_versions: ${{ steps.load_versions.outputs.dns_versions }}
+      multicast_versions: ${{ steps.load_versions.outputs.multicast_versions }}
+      observer_versions: ${{ steps.load_versions.outputs.observer_versions }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Parse versions
+        id: load_versions
+        run: |
+          extract_versions() {
+            grep "^$1:" $VERSIONS_FILE | cut -d':' -f2 | jq -R -s -c 'split("\n") | map(select(. != ""))'
+          }
+          echo "core_versions=$(extract_versions 'homeassistant')" >> $GITHUB_OUTPUT
+          echo "cli_versions=$(extract_versions 'cli')" >> $GITHUB_OUTPUT
+          echo "audio_versions=$(extract_versions 'audio')" >> $GITHUB_OUTPUT
+          echo "dns_versions=$(extract_versions 'dns')" >> $GITHUB_OUTPUT
+          echo "multicast_versions=$(extract_versions 'multicast')" >> $GITHUB_OUTPUT
+          echo "observer_versions=$(extract_versions 'observer')" >> $GITHUB_OUTPUT
+
+  sync_components:
+    runs-on: ubuntu-latest
+    needs: version_loader
+    strategy:
+      matrix:
+        component: [
+          { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }},
+          { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }},
+          { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }},
+          { type: 'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }},
+          { type: 'observer', name: 'hassio-observer', versions: ${{ fromJSON(needs.version_loader.outputs.observer_versions) }}
+        ]
+        arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
     steps:
       - uses: actions/checkout@v3
 
-      - name: Load version list
-        id: load_versions
-        run: |
-          versions=$(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          echo "versions=${versions}" >> $GITHUB_OUTPUT
+      - name: Login to Aliyun
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
 
-  image_sync:
+      - name: Pull ${{ matrix.component.type }} image
+        run: |
+          SRC_IMAGE="ghcr.io/home-assistant/${arch}-${{ matrix.component.name }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}"
+          
+          docker pull ${SRC_IMAGE}:${{ matrix.component.versions }} || {
+            echo "::warning::Skipping ${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} (not exists)"
+            exit 0
+          }
+          
+          docker tag ${SRC_IMAGE}:${{ matrix.component.versions }} ${DEST_IMAGE}:${{ matrix.component.versions }}
+          docker tag ${SRC_IMAGE}:${{ matrix.component.versions }} ${DEST_IMAGE}:latest
+
+      - name: Push ${{ matrix.component.type }} image
+        run: |
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}"
+          docker push ${DEST_IMAGE}:${{ matrix.component.versions }}
+          docker push ${DEST_IMAGE}:latest
+
+      - name: Cleanup ${{ matrix.component.type }} images
+        run: |
+          docker rmi ghcr.io/home-assistant/${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}:latest || true
+
+  sync_core:
     needs: version_loader
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        version: ${{ fromJSON(needs.version_loader.outputs.versions) }}
+        version: ${{ fromJSON(needs.version_loader.outputs.core_versions) }}
         arch: [
           'home-assistant',
           'amd64-homeassistant',
@@ -70,58 +129,45 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: Pull from GHCR
+      - name: Pull Home Assistant Core
         run: |
           SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
           
-          # 使用GitHub Token拉取GHCR镜像
-          # echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          
           docker pull ${SRC_IMAGE}:${{ matrix.version }} || {
-            echo "::warning::Skipping ${{ matrix.arch }}:${{ matrix.version }} (not available)"
+            echo "::warning::Skipping ${{ matrix.arch }}:${{ matrix.version }} (not exists)"
             exit 0
           }
           
-          # 基础标签（所有架构）
           docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
           docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:latest
           
-          # 仅对主镜像添加特殊标签
           if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            # 始终添加stable标签（指向当前版本）
             docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:stable
-            
-            # 添加年月标签（从版本号提取）
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${ym_tag}
-            echo "Added stable and YYYY.MM tags for home-assistant:${{ matrix.version }}"
+            YM_TAG=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${YM_TAG}
           fi
 
-      - name: Push to Aliyun
+      - name: Push Core Images
         run: |
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
-          
-          # 推送基础标签
           docker push ${DEST_IMAGE}:${{ matrix.version }}
           docker push ${DEST_IMAGE}:latest
           
-          # 推送主镜像的特殊标签
           if [ "${{ matrix.arch }}" == "home-assistant" ]; then
             docker push ${DEST_IMAGE}:stable
-            
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker push ${DEST_IMAGE}:${ym_tag}
+            YM_TAG=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+            docker push ${DEST_IMAGE}:${YM_TAG}
           fi
 
-      - name: Cleanup
+      - name: Cleanup Core Images
         run: |
           docker rmi ghcr.io/home-assistant/${{ matrix.arch }}:${{ matrix.version }} || true
           docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ matrix.version }} || true
           docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest || true
           
           if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag} || true
+            YM_TAG=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
+            docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${YM_TAG} || true
             docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable || true
           fi
