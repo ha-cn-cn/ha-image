@@ -40,15 +40,17 @@ jobs:
     needs: version_loader
     strategy:
       matrix:
-        component: 
-          - { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }}}
-          - { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }}}
-          - { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }}}
-          - { type: 'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }}}
-          - { type: 'observer', name: 'hassio-observer', versions: ${{ fromJSON(needs.version_loader.outputs.observer_versions) }}}
+        component: [
+          { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }},
+          { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }},
+          { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }},
+          { type: 'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }},
+          { type: 'observer', name: 'hassio-observer', versions: ${{ fromJSON(needs.version_loader.outputs.observer_versions) }}
+        ]
         arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
     steps:
       - uses: actions/checkout@v3
+      
       - name: Login to Aliyun
         uses: docker/login-action@v2
         with:
@@ -58,11 +60,11 @@ jobs:
 
       - name: Pull ${{ matrix.component.type }} image
         run: |
-          SRC_IMAGE="ghcr.io/home-assistant/${matrix.arch}-${{ matrix.component.name }}"
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}"
+          SRC_IMAGE="ghcr.io/home-assistant/${arch}-${{ matrix.component.name }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}"
           
           docker pull ${SRC_IMAGE}:${{ matrix.component.versions }} || {
-            echo "::warning::Skipping ${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} (not exists)"
+            echo "::warning::Skipping ${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} (not exists)"
             exit 0
           }
           
@@ -71,15 +73,15 @@ jobs:
 
       - name: Push ${{ matrix.component.type }} image
         run: |
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}"
           docker push ${DEST_IMAGE}:${{ matrix.component.versions }}
           docker push ${DEST_IMAGE}:latest
 
-      - name: Cleanup images
+      - name: Cleanup ${{ matrix.component.type }} images
         run: |
-          docker rmi ghcr.io/home-assistant/${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${matrix.arch}-${{ matrix.component.name }}:latest || true
+          docker rmi ghcr.io/home-assistant/${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}:${{ matrix.component.versions }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch}-${{ matrix.component.name }}:latest || true
 
   sync_core:
     needs: version_loader
@@ -93,11 +95,33 @@ jobs:
           'i386-homeassistant',
           'armhf-homeassistant',
           'armv7-homeassistant',
-          'aarch64-homeassistant'
-          # 其他架构可根据需要添加
+          'aarch64-homeassistant',
+          'generic-x86-64-homeassistant',
+          'intel-nuc-homeassistant',
+          'khadas-vim3-homeassistant',
+          'odroid-c2-homeassistant',
+          'odroid-c4-homeassistant',
+          'odroid-m1-homeassistant',
+          'odroid-n2-homeassistant',
+          'odroid-xu-homeassistant',
+          'qemuarm-homeassistant',
+          'qemuarm-64-homeassistant',
+          'qemux86-homeassistant',
+          'qemux86-64-homeassistant',
+          'raspberrypi-homeassistant',
+          'raspberrypi2-homeassistant',
+          'raspberrypi3-homeassistant',
+          'raspberrypi3-64-homeassistant',
+          'raspberrypi4-homeassistant',
+          'raspberrypi4-64-homeassistant',
+          'raspberrypi5-64-homeassistant',
+          'tinker-homeassistant',
+          'yellow-homeassistant',
+          'green-homeassistant'
         ]
     steps:
       - uses: actions/checkout@v3
+      
       - name: Login to Aliyun
         uses: docker/login-action@v2
         with:
@@ -105,7 +129,7 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: Pull Core Image
+      - name: Pull Home Assistant Core
         run: |
           SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
