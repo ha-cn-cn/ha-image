@@ -76,7 +76,7 @@ jobs:
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
           
           # 使用GitHub Token拉取GHCR镜像
-          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          # echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           
           docker pull ${SRC_IMAGE}:${{ matrix.version }} || {
             echo "::warning::Skipping ${{ matrix.arch }}:${{ matrix.version }} (not available)"
