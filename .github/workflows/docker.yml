@@ -44,7 +44,7 @@ jobs:
           { type: 'cli', name: 'hassio-cli', versions: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }}},
           { type: 'audio', name: 'hassio-audio', versions: ${{ fromJSON(needs.version_loader.outputs.audio_versions) }}},
           { type: 'dns', name: 'hassio-dns', versions: ${{ fromJSON(needs.version_loader.outputs.dns_versions) }}},
-          { type:'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }}},
+          { type: 'multicast', name: 'hassio-multicast', versions: ${{ fromJSON(needs.version_loader.outputs.multicast_versions) }}},
           { type: 'observer', name: 'hassio-observer', versions: ${{ fromJSON(needs.version_loader.outputs.observer_versions) }}}
         ]
         arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
