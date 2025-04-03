@@ -1,1 +1,1 @@
-home-assistant:2025.2.0
+cli:2024.09.0
