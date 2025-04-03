@@ -1,249 +1,200 @@
-name: Sync Home Assistant from GHCR
+name: 从GHCR同步Home Assistant镜像
 on:
   push:
     paths:
-      - 'versions.txt'  # 只有当versions.txt文件发生变化时触发工作流
+      - 'versions.txt'  # 仅当versions.txt文件变更时触发
 
 env:
-  ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}  # 阿里云容器镜像仓库地址
-  ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}  # 阿里云命名空间
-  VERSIONS_FILE: 'versions.txt'  # 版本控制文件路径
+  ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}  # 阿里云镜像仓库地址
+  ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}  # 命名空间
+  VERSIONS_FILE: 'versions.txt'  # 版本文件路径
 
 jobs:
   # 版本加载和验证任务
   version_loader:
-    runs-on: ubuntu-latest  # 使用最新版Ubuntu运行环境
+    runs-on: ubuntu-latest
     outputs:
-      versions: ${{ steps.load_versions.outputs.versions }}  # 输出所有版本信息
-      valid_versions: ${{ steps.validate_versions.outputs.valid_versions }}  # 输出有效的Home Assistant版本
-      cli_versions: ${{ steps.validate_cli_versions.outputs.valid_versions }}  # 输出有效的CLI版本
+      ha_versions: ${{ steps.validate_ha.outputs.versions }}  # Home Assistant有效版本
+      cli_versions: ${{ steps.validate_cli.outputs.versions }}  # CLI有效版本
+      dns_versions: ${{ steps.validate_components.outputs.dns_versions }}  # DNS版本
+      audio_versions: ${{ steps.validate_components.outputs.audio_versions }}  # 音频版本
+      multicast_versions: ${{ steps.validate_components.outputs.multicast_versions }}  # 组播版本
+      observer_versions: ${{ steps.validate_components.outputs.observer_versions }}  # 观察者版本
     
     steps:
-      - uses: actions/checkout@v3  # 检出仓库代码
+      - uses: actions/checkout@v3
 
-      # 步骤1：加载版本列表
-      - name: Load version list
-        id: load_versions
+      # 验证Home Assistant版本
+      - name: 验证Home Assistant版本
+        id: validate_ha
         run: |
-          # 从版本文件中读取内容，过滤注释和空行，转换为JSON数组格式
-          versions=$(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          echo "versions=${versions}" >> $GITHUB_OUTPUT  # 输出到工作流环境变量
-
-      # 步骤2：验证Home Assistant版本是否存在
-      - name: Validate versions exist in GHCR
-        id: validate_versions
-        run: |
-          valid_versions=()  # 初始化有效版本数组
-          # 遍历版本文件中的每一行
-          for image_version in $(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$'); do
-            # 按冒号分隔镜像名称和版本号
-            IFS=':' read -r image version <<< "$image_version"
-            # 只处理home-assistant镜像
-            if [ "$image" == "home-assistant" ]; then
-              # 检查该版本在GitHub容器注册表中是否存在
+          valid_versions=()
+          while IFS=':' read -r component version; do
+            if [ "$component" == "home-assistant" ]; then
               if docker manifest inspect ghcr.io/home-assistant/home-assistant:$version >/dev/null 2>&1; then
-                valid_versions+=("$version")  # 添加到有效版本数组
-                echo "Home Assistant版本 $version 存在于GHCR"
+                valid_versions+=("$version")
+                echo "发现有效版本: $version"
               else
-                echo "::warning::Home Assistant版本 $version 在GHCR中不存在"
+                echo "::warning::无效版本: $version"
               fi
             fi
-          done
-          # 输出有效版本数组（确保始终输出JSON数组格式）
-          echo "valid_versions=$(jq -c -n '$ARGS.positional' --args "${valid_versions[@]}")" >> $GITHUB_OUTPUT
+          done < $VERSIONS_FILE
+          echo "versions=$(jq -c -n '$ARGS.positional' --args "${valid_versions[@]}")" >> $GITHUB_OUTPUT
 
-      # 步骤3：验证CLI和组件版本
-      - name: Validate CLI and component versions
-        id: validate_cli_versions
+      # 验证CLI版本
+      - name: 验证CLI版本
+        id: validate_cli
         run: |
-          valid_versions=()  # 初始化有效CLI版本数组
-          # 遍历版本文件中的每一行
-          for image_version in $(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$'); do
-            IFS=':' read -r image version <<< "$image_version"
-            # 只处理cli镜像
-            if [ "$image" == "cli" ]; then
-              # 通过检查amd64架构的CLI镜像验证版本是否存在
+          valid_versions=()
+          while IFS=':' read -r component version; do
+            if [ "$component" == "cli" ]; then
               if docker manifest inspect ghcr.io/home-assistant/amd64-hassio-cli:$version >/dev/null 2>&1; then
-                valid_versions+=("$version")  # 添加到有效CLI版本数组
-                echo "CLI版本 $version 存在于GHCR"
+                valid_versions+=("$version")
+                echo "发现有效CLI版本: $version"
               else
-                echo "::warning::CLI版本 $version 在GHCR中不存在"
+                echo "::warning::无效CLI版本: $version"
               fi
             fi
-          done
-          # 输出有效CLI版本数组（确保始终输出JSON数组格式）
-          echo "valid_versions=$(jq -c -n '$ARGS.positional' --args "${valid_versions[@]}")" >> $GITHUB_OUTPUT
+          done < $VERSIONS_FILE
+          echo "versions=$(jq -c -n '$ARGS.positional' --args "${valid_versions[@]}")" >> $GITHUB_OUTPUT
 
-  # Home Assistant镜像同步任务
-  image_sync:
-    needs: version_loader  # 依赖版本加载任务
-    # 只有存在有效的Home Assistant版本时才执行此任务
-    if: ${{ fromJSON(needs.version_loader.outputs.valid_versions) != '[]' }}
+      # 验证各组件版本
+      - name: 验证组件版本
+        id: validate_components
+        run: |
+          dns_versions=(); audio_versions=()
+          multicast_versions=(); observer_versions=()
+          
+          while IFS=':' read -r component version; do
+            case $component in
+              dns)
+                if docker manifest inspect ghcr.io/home-assistant/amd64-hassio-dns:$version >/dev/null 2>&1; then
+                  dns_versions+=("$version")
+                  echo "发现有效DNS版本: $version"
+                else
+                  echo "::warning::无效DNS版本: $version"
+                fi
+                ;;
+              audio)
+                if docker manifest inspect ghcr.io/home-assistant/amd64-hassio-audio:$version >/dev/null 2>&1; then
+                  audio_versions+=("$version")
+                  echo "发现有效音频版本: $version"
+                else
+                  echo "::warning::无效音频版本: $version"
+                fi
+                ;;
+              multicast)
+                if docker manifest inspect ghcr.io/home-assistant/amd64-hassio-multicast:$version >/dev/null 2>&1; then
+                  multicast_versions+=("$version")
+                  echo "发现有效组播版本: $version"
+                else
+                  echo "::warning::无效组播版本: $version"
+                fi
+                ;;
+              observer)
+                if docker manifest inspect ghcr.io/home-assistant/amd64-hassio-observer:$version >/dev/null 2>&1; then
+                  observer_versions+=("$version")
+                  echo "发现有效观察者版本: $version"
+                else
+                  echo "::warning::无效观察者版本: $version"
+                fi
+                ;;
+            esac
+          done < $VERSIONS_FILE
+          
+          # 输出各组件版本
+          echo "dns_versions=$(jq -c -n '$ARGS.positional' --args "${dns_versions[@]}")" >> $GITHUB_OUTPUT
+          echo "audio_versions=$(jq -c -n '$ARGS.positional' --args "${audio_versions[@]}")" >> $GITHUB_OUTPUT
+          echo "multicast_versions=$(jq -c -n '$ARGS.positional' --args "${multicast_versions[@]}")" >> $GITHUB_OUTPUT
+          echo "observer_versions=$(jq -c -n '$ARGS.positional' --args "${observer_versions[@]}")" >> $GITHUB_OUTPUT
+
+  # Home Assistant镜像同步
+  sync_homeassistant:
+    needs: version_loader
+    if: ${{ fromJSON(needs.version_loader.outputs.ha_versions) != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # 使用有效的Home Assistant版本创建矩阵
-        version: ${{ fromJSON(needs.version_loader.outputs.valid_versions) }}
-        # 支持的所有硬件架构列表
+        version: ${{ fromJSON(needs.version_loader.outputs.ha_versions) }}
         arch: [
-          'home-assistant',          # 通用镜像
-          'amd64-homeassistant',     # AMD64架构
-          'i386-homeassistant',      # 32位x86架构
-          'armhf-homeassistant',     # ARM硬浮点
-          'armv7-homeassistant',     # ARMv7架构
-          'aarch64-homeassistant',   # ARM64架构
-          # 以下为特定设备镜像
-          'generic-x86-64-homeassistant',
-          'intel-nuc-homeassistant',
-          'khadas-vim3-homeassistant',
-          'odroid-c2-homeassistant',
-          'odroid-c4-homeassistant',
-          'odroid-m1-homeassistant',
-          'odroid-n2-homeassistant',
-          'odroid-xu-homeassistant',
-          'qemuarm-homeassistant',
-          'qemuarm-64-homeassistant',
-          'qemux86-homeassistant',
-          'qemux86-64-homeassistant',
-          'raspberrypi-homeassistant',
-          'raspberrypi2-homeassistant',
-          'raspberrypi3-homeassistant',
-          'raspberrypi3-64-homeassistant',
-          'raspberrypi4-homeassistant',
-          'raspberrypi4-64-homeassistant',
-          'raspberrypi5-64-homeassistant',
-          'tinker-homeassistant',
-          'yellow-homeassistant',
-          'green-homeassistant'
+          'home-assistant', 'amd64-homeassistant', 'i386-homeassistant',
+          'armhf-homeassistant', 'armv7-homeassistant', 'aarch64-homeassistant',
+          # 其他架构...
         ]
     steps:
-      - uses: actions/checkout@v3  # 检出代码
-
-      # 登录阿里云容器镜像服务
-      - name: Login to Aliyun
-        uses: docker/login-action@v2
-        with:
-          registry: ${{ env.ALIYUN_REGISTRY }}  # 使用环境变量中的仓库地址
-          username: ${{ secrets.ALIYUN_USERNAME }}  # 使用保密用户名
-          password: ${{ secrets.ALIYUN_PASSWORD }}  # 使用保密密码
-
-      # 登录GitHub容器注册表
-      - name: Login to GHCR
-        run: |
-          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io \
-            -u ${{ github.actor }} \
-            --password-stdin
-
-      # 镜像同步操作
-      - name: Pull and push image
-        run: |
-          # 定义源镜像和目标镜像地址
-          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
-          
-          # 检查特定架构的镜像版本是否存在
-          if ! docker manifest inspect ${SRC_IMAGE}:${{ matrix.version }} >/dev/null 2>&1; then
-            echo "::warning::跳过 ${{ matrix.arch }}:${{ matrix.version }} (该架构版本不存在)"
-            exit 0  # 不存在则跳过
-          fi
-          
-          echo "正在同步 ${{ matrix.arch }}:${{ matrix.version }}"
-          
-          # 拉取镜像
-          docker pull ${SRC_IMAGE}:${{ matrix.version }}
-          
-          # 打标签并推送到阿里云
-          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
-          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:latest
-          docker push ${DEST_IMAGE}:${{ matrix.version }}
-          docker push ${DEST_IMAGE}:latest
-          
-          # 如果是主镜像，添加额外标签
-          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:stable
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')  # 生成年月标签
-            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${ym_tag}
-            docker push ${DEST_IMAGE}:stable
-            docker push ${DEST_IMAGE}:${ym_tag}
-          fi
-
-      # 清理本地镜像
-      - name: Cleanup
-        run: |
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
-          # 删除本地镜像以释放空间
-          docker rmi ghcr.io/home-assistant/${{ matrix.arch }}:${{ matrix.version }} || true
-          docker rmi ${DEST_IMAGE}:${{ matrix.version }} || true
-          docker rmi ${DEST_IMAGE}:latest || true
-          
-          # 如果是主镜像，清理额外标签
-          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker rmi ${DEST_IMAGE}:${ym_tag} || true
-            docker rmi ${DEST_IMAGE}:stable || true
-          fi
-
-  # CLI及组件同步任务
-  cli_component_sync:
-    needs: version_loader  # 依赖版本加载任务
-    # 只有存在有效的CLI版本时才执行此任务
-    if: ${{ fromJSON(needs.version_loader.outputs.cli_versions) != '[]' }}
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # 使用有效的CLI版本创建矩阵
-        version: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }}
-        # 要同步的组件列表
-        component: ['cli', 'audio', 'dns', 'multicast', 'observer']
-        # 支持的架构列表
-        arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
-    steps:
-      - uses: actions/checkout@v3  # 检出代码
-
-      # 登录阿里云容器镜像服务
-      - name: Login to Aliyun
+      - uses: actions/checkout@v3
+      - name: 登录阿里云
         uses: docker/login-action@v2
         with:
           registry: ${{ env.ALIYUN_REGISTRY }}
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
-
-      # 登录GitHub容器注册表
-      - name: Login to GHCR
+      
+      - name: 同步镜像
         run: |
-          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io \
-            -u ${{ github.actor }} \
-            --password-stdin
+          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
+          
+          docker pull ${SRC_IMAGE}:${{ matrix.version }}
+          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
+          docker push ${DEST_IMAGE}:${{ matrix.version }}
 
-      # 组件同步操作
-      - name: Pull and push component image
+  # 组件同步任务
+  sync_components:
+    needs: version_loader
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: ['dns', 'audio', 'multicast', 'observer']
+        arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
+    steps:
+      - uses: actions/checkout@v3
+      - name: 登录阿里云
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+      
+      - name: 同步组件
         run: |
-          # 定义源组件和目标组件镜像地址
+          # 获取对应组件的最新版本
+          version=$(grep "^${{ matrix.component }}:" $VERSIONS_FILE | cut -d':' -f2)
+          if [ -z "$version" ]; then
+            echo "没有找到${{ matrix.component }}的版本"
+            exit 0
+          fi
+          
           SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${{ matrix.component }}"
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ matrix.component }}"
           
-          # 检查特定架构的组件版本是否存在
-          if ! docker manifest inspect ${SRC_IMAGE}:${{ matrix.version }} >/dev/null 2>&1; then
-            echo "::warning::跳过 ${{ matrix.arch }}-hassio-${{ matrix.component }}:${{ matrix.version }} (该架构版本不存在)"
-            exit 0  # 不存在则跳过
-          fi
-          
-          echo "正在同步 ${{ matrix.arch }}-hassio-${{ matrix.component }}:${{ matrix.version }}"
-          
-          # 拉取组件镜像
-          docker pull ${SRC_IMAGE}:${{ matrix.version }}
-          
-          # 打标签并推送到阿里云
-          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
-          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:latest
-          docker push ${DEST_IMAGE}:${{ matrix.version }}
-          docker push ${DEST_IMAGE}:latest
+          docker pull ${SRC_IMAGE}:$version
+          docker tag ${SRC_IMAGE}:$version ${DEST_IMAGE}:$version
+          docker push ${DEST_IMAGE}:$version
 
-      # 清理本地组件镜像
-      - name: Cleanup component images
+  # CLI同步任务
+  sync_cli:
+    needs: version_loader
+    if: ${{ fromJSON(needs.version_loader.outputs.cli_versions) != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: ${{ fromJSON(needs.version_loader.outputs.cli_versions) }}
+        arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
+    steps:
+      - uses: actions/checkout@v3
+      - name: 登录阿里云
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+      
+      - name: 同步CLI
         run: |
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ matrix.component }}"
-          # 删除本地组件镜像以释放空间
-          docker rmi ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${{ matrix.component }}:${{ matrix.version }} || true
-          docker rmi ${DEST_IMAGE}:${{ matrix.version }} || true
-          docker rmi ${DEST_IMAGE}:latest || true
+          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}-hassio-cli"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-cli"
+          
+          docker pull ${SRC_IMAGE}:${{ matrix.version }}
+          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
+          docker push ${DEST_IMAGE}:${{ matrix.version }}
