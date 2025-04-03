@@ -29,12 +29,17 @@ jobs:
         id: validate_versions
         run: |
           valid_versions=()
-          for version in $(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$'); do
-            if docker manifest inspect ghcr.io/home-assistant/home-assistant:$version >/dev/null 2>&1; then
-              valid_versions+=("$version")
-              echo "Version $version exists in GHCR"
+          for image_version in $(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$'); do
+            IFS=':' read -r image version <<< "$image_version"
+            if [ "$image" == "home-assistant" ]; then
+              if docker manifest inspect ghcr.io/home-assistant/home-assistant:$version >/dev/null 2>&1; then
+                valid_versions+=("$version")
+                echo "Version $version exists in GHCR for home-assistant"
+              else
+                echo "::warning::Version $version does not exist in GHCR for home-assistant image"
+              fi
             else
-              echo "::warning::Version $version does not exist in GHCR for home-assistant image"
+              echo "::warning::Currently only 'home-assistant' image is supported, skipping $image"
             fi
           done
           echo "valid_versions=$(jq -c -n '$ARGS.positional' --args "${valid_versions[@]}")" >> $GITHUB_OUTPUT
