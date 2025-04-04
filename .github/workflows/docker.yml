@@ -15,46 +15,45 @@ jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
+      versions: ${{ steps.load_versions.outputs.versions }}
       valid_versions: ${{ steps.validate_versions.outputs.valid_versions }}
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup Docker
-        uses: docker/setup-buildx-action@v2
+      - name: Load version list
+        id: load_versions
+        run: |
+          versions=$(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          echo "versions=${versions}" >> $GITHUB_OUTPUT
 
-      - name: Validate versions
+      - name: Validate versions exist in GHCR
         id: validate_versions
         run: |
           valid_versions=()
-          while IFS=: read -r image_type version; do
-            # 跳过注释和空行
-            [[ "$image_type" =~ ^#|^$ ]] && continue
-            
-            # 统一转换为小写
-            image_type=$(echo "$image_type" | tr '[:upper:]' '[:lower:]')
-            version=$(echo "$version" | xargs)  # 去除空格
-
+          for image_version in $(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$'); do
+            IFS=':' read -r image_type version <<< "$image_version"
             case "$image_type" in
               home-assistant)
-                image_path="home-assistant/home-assistant"
+                if docker manifest inspect ghcr.io/home-assistant/home-assistant:$version >/dev/null 2>&1; then
+                  valid_versions+=("$image_type:$version")
+                  echo "✅ Version $version exists for home-assistant"
+                else
+                  echo "::warning::Version $version does not exist for home-assistant"
+                fi
                 ;;
               cli|audio|dns|multicast|observer|odmd)
-                image_path="home-assistant/$image_type"
+                if docker manifest inspect ghcr.io/home-assistant/$image_type:$version >/dev/null 2>&1; then
+                  valid_versions+=("$image_type:$version")
+                  echo "✅ Version $version exists for $image_type"
+                else
+                  echo "::warning::Version $version does not exist for $image_type"
+                fi
                 ;;
               *)
-                echo "::warning::Unsupported image type: $image_type"
-                continue
+                echo "::error::Unsupported image type: $image_type"
                 ;;
             esac
-
-            if docker manifest inspect "ghcr.io/${image_path}:${version}" >/dev/null 2>&1; then
-              valid_versions+=("$image_type:$version")
-              echo "✅ Valid: $image_type:$version"
-            else
-              echo "::warning::Not found in GHCR: $image_type:$version"
-            fi
-          done < "$VERSIONS_FILE"
-
+          done
           echo "valid_versions=$(jq -c -n '$ARGS.positional' --args "${valid_versions[@]}")" >> $GITHUB_OUTPUT
 
   image_sync:
@@ -67,123 +66,115 @@ jobs:
         include:
           # 主镜像架构
           - image_type: home-assistant
+            arch_suffix: "homeassistant"
             arches: >-
-              ["", "amd64-", "i386-", "armhf-", "armv7-", "aarch64-",
-               "generic-x86-64-", "intel-nuc-", "khadas-vim3-",
-               "odroid-c2-", "odroid-c4-", "odroid-m1-", "odroid-n2-",
-               "odroid-xu-", "qemuarm-", "qemuarm-64-", "qemux86-",
-               "qemux86-64-", "raspberrypi-", "raspberrypi2-",
-               "raspberrypi3-", "raspberrypi3-64-", "raspberrypi4-",
-               "raspberrypi4-64-", "raspberrypi5-64-", "tinker-",
-               "yellow-", "green-"]
-            suffix: "homeassistant"
-          
+              [
+                "", "amd64-", "i386-", "armhf-", "armv7-", "aarch64-",
+                "generic-x86-64-", "intel-nuc-", "khadas-vim3-",
+                "odroid-c2-", "odroid-c4-", "odroid-m1-", "odroid-n2-",
+                "odroid-xu-", "qemuarm-", "qemuarm-64-", "qemux86-",
+                "qemux86-64-", "raspberrypi-", "raspberrypi2-",
+                "raspberrypi3-", "raspberrypi3-64-", "raspberrypi4-",
+                "raspberrypi4-64-", "raspberrypi5-64-", "tinker-",
+                "yellow-", "green-"
+              ]
           # 组件镜像架构
           - image_type: cli
+            arch_suffix: "hassio-cli"
             arches: >-
               ["amd64-", "i386-", "armhf-", "armv7-", "aarch64-"]
-            suffix: "hassio-cli"
-          
           - image_type: audio
+            arch_suffix: "hassio-audio"
             arches: >-
               ["amd64-", "i386-", "armhf-", "armv7-", "aarch64-"]
-            suffix: "hassio-audio"
-          
           - image_type: dns
+            arch_suffix: "hassio-dns"
             arches: >-
               ["amd64-", "i386-", "armhf-", "armv7-", "aarch64-"]
-            suffix: "hassio-dns"
-          
           - image_type: multicast
+            arch_suffix: "hassio-multicast"
             arches: >-
               ["amd64-", "i386-", "armhf-", "armv7-", "aarch64-"]
-            suffix: "hassio-multicast"
-          
           - image_type: observer
+            arch_suffix: "hassio-observer"
             arches: >-
               ["amd64-", "i386-", "armhf-", "armv7-", "aarch64-"]
-            suffix: "hassio-observer"
-          
           - image_type: odmd
+            arch_suffix: "hassio-odmd"
             arches: >-
               ["amd64-", "i386-", "armhf-", "armv7-", "aarch64-"]
-            suffix: "hassio-odmd"
-
     steps:
       - uses: actions/checkout@v3
-      
-      - name: Setup Docker
-        uses: docker/setup-buildx-action@v2
 
-      - name: Parse inputs
+      - name: Parse image type and version
         id: parse
         run: |
           IFS=':' read -r image_type version <<< "${{ matrix.image_version }}"
           echo "image_type=${image_type}" >> $GITHUB_OUTPUT
           echo "version=${version}" >> $GITHUB_OUTPUT
 
-      - name: Login to registries
-        run: |
-          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
-            ${{ env.ALIYUN_REGISTRY }} \
-            -u "${{ secrets.ALIYUN_USERNAME }}" \
-            --password-stdin
-          
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login \
-            ghcr.io \
-            -u "${{ github.actor }}" \
-            --password-stdin
+      - name: Login to Aliyun
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: Login to GHCR
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Sync images
         run: |
-          # 主镜像特殊处理
-          if [[ "${{ steps.parse.outputs.image_type }}" == "home-assistant" ]]; then
-            src_image="ghcr.io/home-assistant/home-assistant"
-            dest_image="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant"
-            
-            docker pull "${src_image}:${{ steps.parse.outputs.version }}"
-            docker tag "${src_image}:${{ steps.parse.outputs.version }}" "${dest_image}:${{ steps.parse.outputs.version }}"
-            docker push "${dest_image}:${{ steps.parse.outputs.version }}"
-            
-            # 额外标签
-            docker tag "${src_image}:${{ steps.parse.outputs.version }}" "${dest_image}:latest"
-            docker push "${dest_image}:latest"
-            
-            if [[ "${{ steps.parse.outputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              ym_tag=$(echo "${{ steps.parse.outputs.version }}" | awk -F. '{print $1"."$2}')
-              docker tag "${src_image}:${{ steps.parse.outputs.version }}" "${dest_image}:stable"
-              docker tag "${src_image}:${{ steps.parse.outputs.version }}" "${dest_image}:${ym_tag}"
-              docker push "${dest_image}:stable"
-              docker push "${dest_image}:${ym_tag}"
-            fi
-          fi
-
-          # 处理所有架构变体
-          arches=${{ fromJSON(matrix.arches) }}
-          for arch_prefix in ${arches[@]}; do
-            src_image="ghcr.io/home-assistant/${arch_prefix}${{ matrix.suffix }}"
-            dest_image="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch_prefix}${{ matrix.suffix }}"
-            
-            if docker manifest inspect "${src_image}:${{ steps.parse.outputs.version }}" >/dev/null 2>&1; then
-              echo "🚀 Syncing ${arch_prefix}${{ matrix.suffix }}:${{ steps.parse.outputs.version }}"
+          image_type="${{ steps.parse.outputs.image_type }}"
+          version="${{ steps.parse.outputs.version }}"
+          arch_suffix="${{ matrix.arch_suffix }}"
+          
+          # 特殊处理主镜像的无前缀情况
+          if [[ "$image_type" == "home-assistant" ]]; then
+            default_arch="home-assistant"
+            if docker manifest inspect ghcr.io/home-assistant/$default_arch:$version >/dev/null 2>&1; then
+              echo "🚀 Syncing $default_arch:$version"
+              docker pull ghcr.io/home-assistant/$default_arch:$version
+              docker tag ghcr.io/home-assistant/$default_arch:$version ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:$version
+              docker push ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:$version
               
-              docker pull "${src_image}:${{ steps.parse.outputs.version }}"
-              docker tag "${src_image}:${{ steps.parse.outputs.version }}" "${dest_image}:${{ steps.parse.outputs.version }}"
-              docker push "${dest_image}:${{ steps.parse.outputs.version }}"
+              # 主镜像额外标签
+              docker tag ghcr.io/home-assistant/$default_arch:$version ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:latest
+              docker push ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:latest
               
-              # 仅主镜像打latest标签
-              if [[ "${{ steps.parse.outputs.image_type }}" == "home-assistant" ]]; then
-                docker tag "${src_image}:${{ steps.parse.outputs.version }}" "${dest_image}:latest"
-                docker push "${dest_image}:latest"
+              if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                ym_tag=$(echo "$version" | awk -F. '{print $1"."$2}')
+                docker tag ghcr.io/home-assistant/$default_arch:$version ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:stable
+                docker tag ghcr.io/home-assistant/$default_arch:$version ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:$ym_tag
+                docker push ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:stable
+                docker push ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:$ym_tag
               fi
               
-              docker rmi "${src_image}:${{ steps.parse.outputs.version }}" || true
+              docker rmi ghcr.io/home-assistant/$default_arch:$version || true
+            fi
+          fi
+          
+          # 处理所有架构变体
+          arches=${{ fromJSON(format('{0}{1}{2}', '[', matrix.arches, ']')) }}
+          for arch_prefix in ${arches[@]}; do
+            src_image="ghcr.io/home-assistant/${arch_prefix}${arch_suffix}"
+            dest_image="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch_prefix}${arch_suffix}"
+            
+            echo "🔍 Checking ${src_image}:$version"
+            if docker manifest inspect ${src_image}:$version >/dev/null 2>&1; then
+              echo "🚀 Syncing ${arch_prefix}${arch_suffix}:$version"
+              docker pull ${src_image}:$version
+              docker tag ${src_image}:$version ${dest_image}:$version
+              docker push ${dest_image}:$version
+              
+              # 仅主镜像打latest标签
+              if [[ "$image_type" == "home-assistant" ]]; then
+                docker tag ${src_image}:$version ${dest_image}:latest
+                docker push ${dest_image}:latest
+              fi
+              
+              docker rmi ${src_image}:$version || true
             else
-              echo "::notice::Skipping ${arch_prefix}${{ matrix.suffix }} (not available)"
+              echo "::warning::Skipping ${arch_prefix}${arch_suffix} (not available)"
             fi
           done
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker system prune -af
