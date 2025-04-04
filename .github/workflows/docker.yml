@@ -51,6 +51,7 @@ jobs:
                 ;;
               *)
                 echo "::error::Unsupported image type: $image_type"
+                exit 1
                 ;;
             esac
           done
@@ -58,13 +59,12 @@ jobs:
 
   image_sync:
     needs: version_loader
-    if: ${{ fromJSON(needs.version_loader.outputs.valid_versions) != '[]' }}
+    if: ${{ needs.version_loader.outputs.valid_versions != '[]' && fromJSON(needs.version_loader.outputs.valid_versions) != [] }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
         image_version: ${{ fromJSON(needs.version_loader.outputs.valid_versions) }}
         include:
-          # 主镜像架构
           - image_type: home-assistant
             arch_suffix: "homeassistant"
             arches: >-
