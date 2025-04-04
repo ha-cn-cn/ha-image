@@ -59,7 +59,7 @@ jobs:
 
   image_sync:
     needs: version_loader
-    if: ${{ needs.version_loader.outputs.valid_versions != '[]' && fromJSON(needs.version_loader.outputs.valid_versions) != [] }}
+    if: ${{ fromJSON(needs.version_loader.outputs.valid_versions) != null && fromJSON(needs.version_loader.outputs.valid_versions).length > 0 }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -68,17 +68,14 @@ jobs:
           - image_type: home-assistant
             arch_suffix: "homeassistant"
             arches: >-
-              [
-                "", "amd64-", "i386-", "armhf-", "armv7-", "aarch64-",
-                "generic-x86-64-", "intel-nuc-", "khadas-vim3-",
-                "odroid-c2-", "odroid-c4-", "odroid-m1-", "odroid-n2-",
-                "odroid-xu-", "qemuarm-", "qemuarm-64-", "qemux86-",
-                "qemux86-64-", "raspberrypi-", "raspberrypi2-",
-                "raspberrypi3-", "raspberrypi3-64-", "raspberrypi4-",
-                "raspberrypi4-64-", "raspberrypi5-64-", "tinker-",
-                "yellow-", "green-"
-              ]
-          # 组件镜像架构
+              ["", "amd64-", "i386-", "armhf-", "armv7-", "aarch64-",
+              "generic-x86-64-", "intel-nuc-", "khadas-vim3-",
+              "odroid-c2-", "odroid-c4-", "odroid-m1-", "odroid-n2-",
+              "odroid-xu-", "qemuarm-", "qemuarm-64-", "qemux86-",
+              "qemux86-64-", "raspberrypi-", "raspberrypi2-",
+              "raspberrypi3-", "raspberrypi3-64-", "raspberrypi4-",
+              "raspberrypi4-64-", "raspberrypi5-64-", "tinker-",
+              "yellow-", "green-"]
           - image_type: cli
             arch_suffix: "hassio-cli"
             arches: >-
@@ -129,7 +126,6 @@ jobs:
           version="${{ steps.parse.outputs.version }}"
           arch_suffix="${{ matrix.arch_suffix }}"
           
-          # 特殊处理主镜像的无前缀情况
           if [[ "$image_type" == "home-assistant" ]]; then
             default_arch="home-assistant"
             if docker manifest inspect ghcr.io/home-assistant/$default_arch:$version >/dev/null 2>&1; then
@@ -138,7 +134,6 @@ jobs:
               docker tag ghcr.io/home-assistant/$default_arch:$version ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:$version
               docker push ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:$version
               
-              # 主镜像额外标签
               docker tag ghcr.io/home-assistant/$default_arch:$version ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:latest
               docker push ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/$default_arch:latest
               
@@ -154,8 +149,7 @@ jobs:
             fi
           fi
           
-          # 处理所有架构变体
-          arches=${{ fromJSON(format('{0}{1}{2}', '[', matrix.arches, ']')) }}
+          arches=${{ fromJSON(matrix.arches) }}
           for arch_prefix in ${arches[@]}; do
             src_image="ghcr.io/home-assistant/${arch_prefix}${arch_suffix}"
             dest_image="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${arch_prefix}${arch_suffix}"
@@ -167,7 +161,6 @@ jobs:
               docker tag ${src_image}:$version ${dest_image}:$version
               docker push ${dest_image}:$version
               
-              # 仅主镜像打latest标签
               if [[ "$image_type" == "home-assistant" ]]; then
                 docker tag ${src_image}:$version ${dest_image}:latest
                 docker push ${dest_image}:latest
