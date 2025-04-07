@@ -1,4 +1,4 @@
-name: Sync Home Assistant from GHCR
+name: Sync HassIO Components from GHCR
 
 on:
   push:
@@ -9,70 +9,43 @@ env:
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   VERSIONS_FILE: 'versions.txt'
+  # 支持的镜像类型和架构
+  SUPPORTED_COMPONENTS: 'cli|dns|audio|multicast|observer'
+  SUPPORTED_ARCHS: 'amd64|i386|armhf|armv7|aarch64'
 
 jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.extract_version.outputs.version }}
+      image_list: ${{ steps.parse_versions.outputs.image_list }}
     steps:
       - uses: actions/checkout@v3
 
-      - name: Validate version format
-        id: validate_format
+      - name: Validate and parse versions
+        id: parse_versions
         run: |
-          # 过滤空行和注释后检查格式
-          valid_line=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$' | head -n 1)
-          if [[ -z "$valid_line" ]]; then
-            echo "::error::versions.txt 文件为空或仅包含注释/空行"
-            exit 1
-          elif [[ ! "$valid_line" =~ ^homeassistant:[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "::error::版本格式错误！必须使用 'homeassistant:版本号' 格式（如 homeassistant:2023.7.1）"
+          # 过滤空行和注释，提取有效行
+          valid_lines=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$' | grep -E "^($SUPPORTED_COMPONENTS):[0-9]+\.[0-9]+\.[0-9]+")
+          
+          # 检查是否有有效输入
+          if [[ -z "$valid_lines" ]]; then
+            echo "::error::格式错误！每行必须为 '组件名:版本号'（如 cli:2024.09.0），支持组件：$SUPPORTED_COMPONENTS"
             exit 1
           fi
 
-      - name: Extract version number
-        id: extract_version
-        run: |
-          # 提取第一个非注释/空行的版本号
-          version=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$' | head -n 1 | cut -d':' -f2)
-          echo "version=${version}" >> $GITHUB_OUTPUT
+          # 转换为JSON数组输出
+          image_list=$(echo "$valid_lines" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          echo "image_list=${image_list}" >> $GITHUB_OUTPUT
+          echo "解析到的镜像列表："
+          echo "$valid_lines"
 
   image_sync:
     needs: version_loader
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [
-          'home-assistant',
-          'amd64-homeassistant',
-          'i386-homeassistant',
-          'armhf-homeassistant',
-          'armv7-homeassistant',
-          'aarch64-homeassistant',
-          'generic-x86-64-homeassistant',
-          'intel-nuc-homeassistant',
-          'khadas-vim3-homeassistant',
-          'odroid-c2-homeassistant',
-          'odroid-c4-homeassistant',
-          'odroid-m1-homeassistant',
-          'odroid-n2-homeassistant',
-          'odroid-xu-homeassistant',
-          'qemuarm-homeassistant',
-          'qemuarm-64-homeassistant',
-          'qemux86-homeassistant',
-          'qemux86-64-homeassistant',
-          'raspberrypi-homeassistant',
-          'raspberrypi2-homeassistant',
-          'raspberrypi3-homeassistant',
-          'raspberrypi3-64-homeassistant',
-          'raspberrypi4-homeassistant',
-          'raspberrypi4-64-homeassistant',
-          'raspberrypi5-64-homeassistant',
-          'tinker-homeassistant',
-          'yellow-homeassistant',
-          'green-homeassistant'
-        ]
+        image: ${{ fromJSON(needs.version_loader.outputs.image_list) }}
+        arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
     steps:
       - uses: actions/checkout@v3
 
@@ -83,55 +56,38 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: Pull from GHCR
+      - name: Extract component and version
+        id: extract
         run: |
-          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
+          component=$(echo "${{ matrix.image }}" | cut -d':' -f1)
+          version=$(echo "${{ matrix.image }}" | cut -d':' -f2)
+          echo "component=${component}" >> $GITHUB_OUTPUT
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "正在处理：$component:$version (架构: ${{ matrix.arch }})"
+
+      - name: Pull and tag images
+        run: |
+          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}"
           
-          docker pull "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" || {
-            echo "::warning::跳过 ${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}（镜像不存在）"
+          # 拉取镜像
+          docker pull "${SRC_IMAGE}:${{ steps.extract.outputs.version }}" || {
+            echo "::warning::跳过 ${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:${{ steps.extract.outputs.version }}（镜像不存在）"
             exit 0
           }
-          
-          # 基础标签（所有架构）
-          docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}"
-          docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:latest"
-          
-          # 仅对主镜像添加特殊标签
-          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
-            # 提取年月标签（如 2023.7）
-            ym_tag=$(echo "${{ needs.version_loader.outputs.version }}" | awk -F. '{print $1"."$2}')
-            
-            # 添加特殊标签
-            docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:stable"
-            docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:${ym_tag}"
-            echo "已添加 stable 和 ${ym_tag} 标签"
-          fi
+
+          # 打标签
+          docker tag "${SRC_IMAGE}:${{ steps.extract.outputs.version }}" "${DEST_IMAGE}:${{ steps.extract.outputs.version }}"
+          docker tag "${SRC_IMAGE}:${{ steps.extract.outputs.version }}" "${DEST_IMAGE}:latest"
 
       - name: Push to Aliyun
         run: |
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
-          
-          # 推送基础标签（所有架构）
-          docker push "${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}"
+          docker push "${DEST_IMAGE}:${{ steps.extract.outputs.version }}"
           docker push "${DEST_IMAGE}:latest"
-          
-          # 推送主镜像的特殊标签
-          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
-            ym_tag=$(echo "${{ needs.version_loader.outputs.version }}" | awk -F. '{print $1"."$2}')
-            docker push "${DEST_IMAGE}:stable"
-            docker push "${DEST_IMAGE}:${ym_tag}"
-          fi
 
       - name: Cleanup
         run: |
-          docker rmi "ghcr.io/home-assistant/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}" || true
-          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}" || true
-          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest" || true
-          
-          # 清理主镜像的特殊标签
-          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
-            ym_tag=$(echo "${{ needs.version_loader.outputs.version }}" | awk -F. '{print $1"."$2}')
-            docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable" || true
-            docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag}" || true
-          fi
+          docker rmi "ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:${{ steps.extract.outputs.version }}" || true
+          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:${{ steps.extract.outputs.version }}" || true
+          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:latest" || true
