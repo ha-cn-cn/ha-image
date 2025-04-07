@@ -1,2 +1,2 @@
 
-homeassistant:2025.2.3
+dns:2024.12.0
