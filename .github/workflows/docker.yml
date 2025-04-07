@@ -93,17 +93,45 @@ jobs:
             exit 0
           }
           
+          # 基础标签（所有架构）
           docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}"
           docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:latest"
+          
+          # 仅对主镜像添加特殊标签
+          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
+            # 提取年月标签（如 2023.7）
+            ym_tag=$(echo "${{ needs.version_loader.outputs.version }}" | awk -F. '{print $1"."$2}')
+            
+            # 添加特殊标签
+            docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:stable"
+            docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:${ym_tag}"
+            echo "已添加 stable 和 ${ym_tag} 标签"
+          fi
 
       - name: Push to Aliyun
         run: |
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
+          
+          # 推送基础标签（所有架构）
           docker push "${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}"
           docker push "${DEST_IMAGE}:latest"
+          
+          # 推送主镜像的特殊标签
+          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
+            ym_tag=$(echo "${{ needs.version_loader.outputs.version }}" | awk -F. '{print $1"."$2}')
+            docker push "${DEST_IMAGE}:stable"
+            docker push "${DEST_IMAGE}:${ym_tag}"
+          fi
 
       - name: Cleanup
         run: |
           docker rmi "ghcr.io/home-assistant/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}" || true
           docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}" || true
           docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest" || true
+          
+          # 清理主镜像的特殊标签
+          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
+            ym_tag=$(echo "${{ needs.version_loader.outputs.version }}" | awk -F. '{print $1"."$2}')
+            docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable" || true
+            docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag}" || true
+          fi
