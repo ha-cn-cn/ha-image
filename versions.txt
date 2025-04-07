@@ -1,3 +1,2 @@
-#123
-observer:2023.06.0
-homeassistant:2025.2.4
+cli:2024.09.0
+dns:2024.12.0
