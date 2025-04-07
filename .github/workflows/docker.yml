@@ -9,7 +9,6 @@ env:
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   VERSIONS_FILE: 'versions.txt'
-  # HassIO组件列表
   SUPPORTED_COMPONENTS: 'cli|dns|audio|multicast|observer'
 
 jobs:
@@ -18,6 +17,8 @@ jobs:
     outputs:
       ha_versions: ${{ steps.parse_versions.outputs.ha_versions }}
       hassio_versions: ${{ steps.parse_versions.outputs.hassio_versions }}
+      has_ha: ${{ steps.parse_versions.outputs.has_ha }}
+      has_hassio: ${{ steps.parse_versions.outputs.has_hassio }}
     steps:
       - uses: actions/checkout@v3
 
@@ -28,24 +29,29 @@ jobs:
           valid_lines=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$')
 
           # 分类处理
-          ha_versions=$(echo "$valid_lines" | grep -E '^homeassistant:[0-9]+\.[0-9]+\.[0-9]+' | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          hassio_versions=$(echo "$valid_lines" | grep -E "^($SUPPORTED_COMPONENTS):[0-9]+\.[0-9]+\.[0-9]+" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          ha_lines=$(echo "$valid_lines" | grep -E '^homeassistant:[0-9]+\.[0-9]+\.[0-9]+' || true)
+          hassio_lines=$(echo "$valid_lines" | grep -E "^($SUPPORTED_COMPONENTS):[0-9]+\.[0-9]+\.[0-9]+" || true)
+
+          # 转换为JSON数组
+          ha_versions=$(echo "$ha_lines" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          hassio_versions=$(echo "$hassio_lines" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+
+          # 检查是否有对应输入
+          echo "ha_versions=${ha_versions:-[]}" >> $GITHUB_OUTPUT
+          echo "hassio_versions=${hassio_versions:-[]}" >> $GITHUB_OUTPUT
+          echo "has_ha=$([[ -n "$ha_lines" ]] && echo "true" || echo "false")" >> $GITHUB_OUTPUT
+          echo "has_hassio=$([[ -n "$hassio_lines" ]] && echo "true" || echo "false")" >> $GITHUB_OUTPUT
 
           # 校验至少有一类有效输入
-          if [[ -z "$ha_versions" && -z "$hassio_versions" ]]; then
+          if [[ -z "$ha_lines" && -z "$hassio_lines" ]]; then
             echo "::error::无效输入！必须为以下格式之一：\nHome Assistant: homeassistant:版本号\nHassIO组件: cli|dns|audio|multicast|observer:版本号"
             exit 1
           fi
 
-          echo "ha_versions=${ha_versions}" >> $GITHUB_OUTPUT
-          echo "hassio_versions=${hassio_versions}" >> $GITHUB_OUTPUT
-          echo "检测到 Home Assistant 版本：$ha_versions"
-          echo "检测到 HassIO 组件版本：$hassio_versions"
-
   # Home Assistant 同步任务
   sync_homeassistant:
     needs: version_loader
-    if: ${{ fromJSON(needs.version_loader.outputs.ha_versions) != '[]' }}
+    if: ${{ needs.version_loader.outputs.has_ha == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -124,7 +130,7 @@ jobs:
   # HassIO 组件同步任务
   sync_hassio:
     needs: version_loader
-    if: ${{ fromJSON(needs.version_loader.outputs.hassio_versions) != '[]' }}
+    if: ${{ needs.version_loader.outputs.has_hassio == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
