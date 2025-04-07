@@ -1,4 +1,4 @@
-name: Sync HassIO Components from GHCR
+name: Sync Home Assistant and HassIO Components
 
 on:
   push:
@@ -9,43 +9,66 @@ env:
   ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
   ALIYUN_NAMESPACE: ${{ secrets.ALIYUN_NAMESPACE }}
   VERSIONS_FILE: 'versions.txt'
-  # 支持的镜像类型和架构
+  # HassIO组件列表
   SUPPORTED_COMPONENTS: 'cli|dns|audio|multicast|observer'
-  SUPPORTED_ARCHS: 'amd64|i386|armhf|armv7|aarch64'
+  # 基础架构列表
+  BASE_ARCHS: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
+  # Home Assistant完整架构列表
+  HA_FULL_ARCHS: [
+    'home-assistant', 'amd64-homeassistant', 'i386-homeassistant',
+    'armhf-homeassistant', 'armv7-homeassistant', 'aarch64-homeassistant',
+    'generic-x86-64-homeassistant', 'intel-nuc-homeassistant',
+    'khadas-vim3-homeassistant', 'odroid-c2-homeassistant',
+    'odroid-c4-homeassistant', 'odroid-m1-homeassistant',
+    'odroid-n2-homeassistant', 'odroid-xu-homeassistant',
+    'qemuarm-homeassistant', 'qemuarm-64-homeassistant',
+    'qemux86-homeassistant', 'qemux86-64-homeassistant',
+    'raspberrypi-homeassistant', 'raspberrypi2-homeassistant',
+    'raspberrypi3-homeassistant', 'raspberrypi3-64-homeassistant',
+    'raspberrypi4-homeassistant', 'raspberrypi4-64-homeassistant',
+    'raspberrypi5-64-homeassistant', 'tinker-homeassistant',
+    'yellow-homeassistant', 'green-homeassistant'
+  ]
 
 jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
-      image_list: ${{ steps.parse_versions.outputs.image_list }}
+      ha_versions: ${{ steps.parse_versions.outputs.ha_versions }}
+      hassio_versions: ${{ steps.parse_versions.outputs.hassio_versions }}
     steps:
       - uses: actions/checkout@v3
 
-      - name: Validate and parse versions
+      - name: Parse and validate versions
         id: parse_versions
         run: |
-          # 过滤空行和注释，提取有效行
-          valid_lines=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$' | grep -E "^($SUPPORTED_COMPONENTS):[0-9]+\.[0-9]+\.[0-9]+")
-          
-          # 检查是否有有效输入
-          if [[ -z "$valid_lines" ]]; then
-            echo "::error::格式错误！每行必须为 '组件名:版本号'（如 cli:2024.09.0），支持组件：$SUPPORTED_COMPONENTS"
+          # 过滤空行和注释
+          valid_lines=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$')
+
+          # 分类处理
+          ha_versions=$(echo "$valid_lines" | grep -E '^homeassistant:[0-9]+\.[0-9]+\.[0-9]+' | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          hassio_versions=$(echo "$valid_lines" | grep -E "^($SUPPORTED_COMPONENTS):[0-9]+\.[0-9]+\.[0-9]+" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+
+          # 校验至少有一类有效输入
+          if [[ -z "$ha_versions" && -z "$hassio_versions" ]]; then
+            echo "::error::无效输入！必须为以下格式之一：\nHome Assistant: homeassistant:版本号\nHassIO组件: cli|dns|audio|multicast|observer:版本号"
             exit 1
           fi
 
-          # 转换为JSON数组输出
-          image_list=$(echo "$valid_lines" | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          echo "image_list=${image_list}" >> $GITHUB_OUTPUT
-          echo "解析到的镜像列表："
-          echo "$valid_lines"
+          echo "ha_versions=${ha_versions}" >> $GITHUB_OUTPUT
+          echo "hassio_versions=${hassio_versions}" >> $GITHUB_OUTPUT
+          echo "检测到 Home Assistant 版本：$ha_versions"
+          echo "检测到 HassIO 组件版本：$hassio_versions"
 
-  image_sync:
+  # Home Assistant 同步任务
+  sync_homeassistant:
     needs: version_loader
+    if: ${{ fromJSON(needs.version_loader.outputs.ha_versions) != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        image: ${{ fromJSON(needs.version_loader.outputs.image_list) }}
-        arch: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
+        version: ${{ fromJSON(needs.version_loader.outputs.ha_versions) }}
+        arch: ${{ env.HA_FULL_ARCHS }}
     steps:
       - uses: actions/checkout@v3
 
@@ -56,38 +79,73 @@ jobs:
           username: ${{ secrets.ALIYUN_USERNAME }}
           password: ${{ secrets.ALIYUN_PASSWORD }}
 
-      - name: Extract component and version
-        id: extract
+      - name: Process Home Assistant image
         run: |
-          component=$(echo "${{ matrix.image }}" | cut -d':' -f1)
-          version=$(echo "${{ matrix.image }}" | cut -d':' -f2)
-          echo "component=${component}" >> $GITHUB_OUTPUT
-          echo "version=${version}" >> $GITHUB_OUTPUT
-          echo "正在处理：$component:$version (架构: ${{ matrix.arch }})"
+          version=$(echo "${{ matrix.version }}" | cut -d':' -f2)
+          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
 
-      - name: Pull and tag images
-        run: |
-          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}"
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}"
-          
-          # 拉取镜像
-          docker pull "${SRC_IMAGE}:${{ steps.extract.outputs.version }}" || {
-            echo "::warning::跳过 ${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:${{ steps.extract.outputs.version }}（镜像不存在）"
+          docker pull "${SRC_IMAGE}:${version}" || {
+            echo "::warning::跳过 ${{ matrix.arch }}:${version}"
             exit 0
           }
 
           # 打标签
-          docker tag "${SRC_IMAGE}:${{ steps.extract.outputs.version }}" "${DEST_IMAGE}:${{ steps.extract.outputs.version }}"
-          docker tag "${SRC_IMAGE}:${{ steps.extract.outputs.version }}" "${DEST_IMAGE}:latest"
+          docker tag "${SRC_IMAGE}:${version}" "${DEST_IMAGE}:${version}"
+          docker tag "${SRC_IMAGE}:${version}" "${DEST_IMAGE}:latest"
 
-      - name: Push to Aliyun
+          # 主镜像特殊标签
+          if [ "${{ matrix.arch }}" = "home-assistant" ]; then
+            ym_tag=$(echo "${version}" | awk -F. '{print $1"."$2}')
+            docker tag "${SRC_IMAGE}:${version}" "${DEST_IMAGE}:stable"
+            docker tag "${SRC_IMAGE}:${version}" "${DEST_IMAGE}:${ym_tag}"
+          fi
+
+          # 推送
+          docker push "${DEST_IMAGE}:${version}"
+          docker push "${DEST_IMAGE}:latest"
+          [ "${{ matrix.arch }}" = "home-assistant" ] && docker push "${DEST_IMAGE}:stable"
+          [ "${{ matrix.arch }}" = "home-assistant" ] && docker push "${DEST_IMAGE}:${ym_tag}"
+
+          # 清理
+          docker rmi "${SRC_IMAGE}:${version}" || true
+          [ "${{ matrix.arch }}" = "home-assistant" ] && docker rmi "${DEST_IMAGE}:${ym_tag}" || true
+
+  # HassIO 组件同步任务
+  sync_hassio:
+    needs: version_loader
+    if: ${{ fromJSON(needs.version_loader.outputs.hassio_versions) != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ${{ fromJSON(needs.version_loader.outputs.hassio_versions) }}
+        arch: ${{ env.BASE_ARCHS }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login to Aliyun
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: Process HassIO component
         run: |
-          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}"
-          docker push "${DEST_IMAGE}:${{ steps.extract.outputs.version }}"
+          component=$(echo "${{ matrix.image }}" | cut -d':' -f1)
+          version=$(echo "${{ matrix.image }}" | cut -d':' -f2)
+          SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${component}"
+          DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${component}"
+
+          docker pull "${SRC_IMAGE}:${version}" || {
+            echo "::warning::跳过 ${{ matrix.arch }}-hassio-${component}:${version}"
+            exit 0
+          }
+
+          docker tag "${SRC_IMAGE}:${version}" "${DEST_IMAGE}:${version}"
+          docker tag "${SRC_IMAGE}:${version}" "${DEST_IMAGE}:latest"
+
+          docker push "${DEST_IMAGE}:${version}"
           docker push "${DEST_IMAGE}:latest"
 
-      - name: Cleanup
-        run: |
-          docker rmi "ghcr.io/home-assistant/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:${{ steps.extract.outputs.version }}" || true
-          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:${{ steps.extract.outputs.version }}" || true
-          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}-hassio-${{ steps.extract.outputs.component }}:latest" || true
+          docker rmi "${SRC_IMAGE}:${version}" || true
