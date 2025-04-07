@@ -14,22 +14,31 @@ jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
-      versions: ${{ steps.load_versions.outputs.versions }}
+      version: ${{ steps.extract_version.outputs.version }}  # 提取纯净版本号
     steps:
       - uses: actions/checkout@v3
 
-      - name: Load version list
-        id: load_versions
+      - name: Validate version format
+        id: validate_format
         run: |
-          versions=$(cat $VERSIONS_FILE | grep -v '^#' | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(. != ""))')
-          echo "versions=${versions}" >> $GITHUB_OUTPUT
+          # 检查是否包含 `homeassistant:` 前缀
+          if ! grep -qE '^homeassistant:[0-9]+\.[0-9]+\.[0-9]+' $VERSIONS_FILE; then
+            echo "::error::版本格式错误！必须使用 'homeassistant:版本号' 格式（如 homeassistant:2023.7.1）"
+            exit 1  # 主动报错停止工作流
+          fi
+
+      - name: Extract version number
+        id: extract_version
+        run: |
+          # 提取版本号（去掉 homeassistant: 前缀）
+          version=$(cat $VERSIONS_FILE | cut -d':' -f2)
+          echo "version=${version}" >> $GITHUB_OUTPUT
 
   image_sync:
     needs: version_loader
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        version: ${{ fromJSON(needs.version_loader.outputs.versions) }}
         arch: [
           'home-assistant',
           'amd64-homeassistant',
@@ -75,53 +84,23 @@ jobs:
           SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
           
-          # 使用GitHub Token拉取GHCR镜像
-          # echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          
-          docker pull ${SRC_IMAGE}:${{ matrix.version }} || {
-            echo "::warning::Skipping ${{ matrix.arch }}:${{ matrix.version }} (not available)"
+          docker pull ${SRC_IMAGE}:${{ needs.version_loader.outputs.version }} || {
+            echo "::warning::跳过 ${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}（不存在）"
             exit 0
           }
           
-          # 基础标签（所有架构）
-          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${{ matrix.version }}
-          docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:latest
-          
-          # 仅对主镜像添加特殊标签
-          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            # 始终添加stable标签（指向当前版本）
-            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:stable
-            
-            # 添加年月标签（从版本号提取）
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker tag ${SRC_IMAGE}:${{ matrix.version }} ${DEST_IMAGE}:${ym_tag}
-            echo "Added stable and YYYY.MM tags for home-assistant:${{ matrix.version }}"
-          fi
+          # 打标签
+          docker tag ${SRC_IMAGE}:${{ needs.version_loader.outputs.version }} ${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}
+          docker tag ${SRC_IMAGE}:${{ needs.version_loader.outputs.version }} ${DEST_IMAGE}:latest
 
       - name: Push to Aliyun
         run: |
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
-          
-          # 推送基础标签
-          docker push ${DEST_IMAGE}:${{ matrix.version }}
+          docker push ${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}
           docker push ${DEST_IMAGE}:latest
-          
-          # 推送主镜像的特殊标签
-          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            docker push ${DEST_IMAGE}:stable
-            
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker push ${DEST_IMAGE}:${ym_tag}
-          fi
 
       - name: Cleanup
         run: |
-          docker rmi ghcr.io/home-assistant/${{ matrix.arch }}:${{ matrix.version }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ matrix.version }} || true
+          docker rmi ghcr.io/home-assistant/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }} || true
+          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }} || true
           docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest || true
-          
-          if [ "${{ matrix.arch }}" == "home-assistant" ]; then
-            ym_tag=$(echo "${{ matrix.version }}" | awk -F. '{print $1"."$2}')
-            docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:${ym_tag} || true
-            docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/home-assistant:stable || true
-          fi
