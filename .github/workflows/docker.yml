@@ -14,24 +14,28 @@ jobs:
   version_loader:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.extract_version.outputs.version }}  # 提取纯净版本号
+      version: ${{ steps.extract_version.outputs.version }}
     steps:
       - uses: actions/checkout@v3
 
       - name: Validate version format
         id: validate_format
         run: |
-          # 检查是否包含 `homeassistant:` 前缀
-          if ! grep -qE '^homeassistant:[0-9]+\.[0-9]+\.[0-9]+' $VERSIONS_FILE; then
+          # 过滤空行和注释后检查格式
+          valid_line=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$' | head -n 1)
+          if [[ -z "$valid_line" ]]; then
+            echo "::error::versions.txt 文件为空或仅包含注释/空行"
+            exit 1
+          elif [[ ! "$valid_line" =~ ^homeassistant:[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             echo "::error::版本格式错误！必须使用 'homeassistant:版本号' 格式（如 homeassistant:2023.7.1）"
-            exit 1  # 主动报错停止工作流
+            exit 1
           fi
 
       - name: Extract version number
         id: extract_version
         run: |
-          # 提取版本号（去掉 homeassistant: 前缀）
-          version=$(cat $VERSIONS_FILE | cut -d':' -f2)
+          # 提取第一个非注释/空行的版本号
+          version=$(grep -v '^#' $VERSIONS_FILE | grep -v '^$' | head -n 1 | cut -d':' -f2)
           echo "version=${version}" >> $GITHUB_OUTPUT
 
   image_sync:
@@ -84,23 +88,22 @@ jobs:
           SRC_IMAGE="ghcr.io/home-assistant/${{ matrix.arch }}"
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
           
-          docker pull ${SRC_IMAGE}:${{ needs.version_loader.outputs.version }} || {
-            echo "::warning::跳过 ${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}（不存在）"
+          docker pull "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" || {
+            echo "::warning::跳过 ${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}（镜像不存在）"
             exit 0
           }
           
-          # 打标签
-          docker tag ${SRC_IMAGE}:${{ needs.version_loader.outputs.version }} ${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}
-          docker tag ${SRC_IMAGE}:${{ needs.version_loader.outputs.version }} ${DEST_IMAGE}:latest
+          docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}"
+          docker tag "${SRC_IMAGE}:${{ needs.version_loader.outputs.version }}" "${DEST_IMAGE}:latest"
 
       - name: Push to Aliyun
         run: |
           DEST_IMAGE="${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}"
-          docker push ${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}
-          docker push ${DEST_IMAGE}:latest
+          docker push "${DEST_IMAGE}:${{ needs.version_loader.outputs.version }}"
+          docker push "${DEST_IMAGE}:latest"
 
       - name: Cleanup
         run: |
-          docker rmi ghcr.io/home-assistant/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }} || true
-          docker rmi ${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest || true
+          docker rmi "ghcr.io/home-assistant/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}" || true
+          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:${{ needs.version_loader.outputs.version }}" || true
+          docker rmi "${{ env.ALIYUN_REGISTRY }}/${{ env.ALIYUN_NAMESPACE }}/${{ matrix.arch }}:latest" || true
