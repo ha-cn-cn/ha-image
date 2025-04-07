@@ -11,24 +11,6 @@ env:
   VERSIONS_FILE: 'versions.txt'
   # HassIO组件列表
   SUPPORTED_COMPONENTS: 'cli|dns|audio|multicast|observer'
-  # 基础架构列表
-  BASE_ARCHS: ['amd64', 'i386', 'armhf', 'armv7', 'aarch64']
-  # Home Assistant完整架构列表
-  HA_FULL_ARCHS: [
-    'home-assistant', 'amd64-homeassistant', 'i386-homeassistant',
-    'armhf-homeassistant', 'armv7-homeassistant', 'aarch64-homeassistant',
-    'generic-x86-64-homeassistant', 'intel-nuc-homeassistant',
-    'khadas-vim3-homeassistant', 'odroid-c2-homeassistant',
-    'odroid-c4-homeassistant', 'odroid-m1-homeassistant',
-    'odroid-n2-homeassistant', 'odroid-xu-homeassistant',
-    'qemuarm-homeassistant', 'qemuarm-64-homeassistant',
-    'qemux86-homeassistant', 'qemux86-64-homeassistant',
-    'raspberrypi-homeassistant', 'raspberrypi2-homeassistant',
-    'raspberrypi3-homeassistant', 'raspberrypi3-64-homeassistant',
-    'raspberrypi4-homeassistant', 'raspberrypi4-64-homeassistant',
-    'raspberrypi5-64-homeassistant', 'tinker-homeassistant',
-    'yellow-homeassistant', 'green-homeassistant'
-  ]
 
 jobs:
   version_loader:
@@ -68,7 +50,35 @@ jobs:
     strategy:
       matrix:
         version: ${{ fromJSON(needs.version_loader.outputs.ha_versions) }}
-        arch: ${{ env.HA_FULL_ARCHS }}
+        arch:
+          - 'home-assistant'
+          - 'amd64-homeassistant'
+          - 'i386-homeassistant'
+          - 'armhf-homeassistant'
+          - 'armv7-homeassistant'
+          - 'aarch64-homeassistant'
+          - 'generic-x86-64-homeassistant'
+          - 'intel-nuc-homeassistant'
+          - 'khadas-vim3-homeassistant'
+          - 'odroid-c2-homeassistant'
+          - 'odroid-c4-homeassistant'
+          - 'odroid-m1-homeassistant'
+          - 'odroid-n2-homeassistant'
+          - 'odroid-xu-homeassistant'
+          - 'qemuarm-homeassistant'
+          - 'qemuarm-64-homeassistant'
+          - 'qemux86-homeassistant'
+          - 'qemux86-64-homeassistant'
+          - 'raspberrypi-homeassistant'
+          - 'raspberrypi2-homeassistant'
+          - 'raspberrypi3-homeassistant'
+          - 'raspberrypi3-64-homeassistant'
+          - 'raspberrypi4-homeassistant'
+          - 'raspberrypi4-64-homeassistant'
+          - 'raspberrypi5-64-homeassistant'
+          - 'tinker-homeassistant'
+          - 'yellow-homeassistant'
+          - 'green-homeassistant'
     steps:
       - uses: actions/checkout@v3
 
@@ -119,7 +129,12 @@ jobs:
     strategy:
       matrix:
         image: ${{ fromJSON(needs.version_loader.outputs.hassio_versions) }}
-        arch: ${{ env.BASE_ARCHS }}
+        arch:
+          - 'amd64'
+          - 'i386'
+          - 'armhf'
+          - 'armv7'
+          - 'aarch64'
     steps:
       - uses: actions/checkout@v3
 
